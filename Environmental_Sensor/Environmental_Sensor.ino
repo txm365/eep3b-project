@@ -3,18 +3,34 @@
 #include <WiFiManager.h>
 #include "time.h"
 #include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 
+#define SEALEVELPRESSURE_HPA (1013.25)
+Adafruit_BME280 bme; // I2C
+
+//Define LCD Pins
 #define RS 27
 #define EN 26
 #define D4 33
 #define D5 32
 #define D6 19
 #define D7 25
-
+#define fan 23
 LiquidCrystal lcd(RS,EN,D4,D5,D6,D7);           // Assign lcd pins
 
 char line1[21],line2[21],line3[21],line4[21];  //Initialize line data buffers
-char times[9];
+char sysTime[9];
+char sysDate[20];
+char temp[5];
+char humi[5];
+char pres[6];
+char fanStatus[4];
+
+float temperature = 0.0;
+float humidity = 0.0;
+float pressure = 0.0;
 
 //Set time parameters
 int tmz = 1;           // Set timezone
@@ -24,25 +40,39 @@ const int   daylightOffset_sec = 3600;
 bool res;
 bool timeConfigured = false;
 unsigned long lasttick= 0;
+int strsize = 0;
+int pos = 0;
 
 // MQTT Broker
 const char *mqtt_broker = "broker.emqx.io";
-const char *topic = "txm365/esp32/temp";
+
+//Publishing Topics
+const char *tmp_tpc = "txm365/esp32/tmp";
+const char *hum_tpc = "txm365/esp32/hum";
+const char *prs_tpc = "txm365/esp32/prs";
+const char *timer_tpc = "txm365/esp32/time";
+const char *fan_ctrl_tpc_dev_pub = "txm365/esp32/fan_ctrl_pub";
+
+//Subscription topics
+const char *fan_ctrl_tpc_dev_sub = "txm365/esp32/fan_ctrl_sub";
+
 const char *mqtt_username = "emqx";
 const char *mqtt_password = "public";
 const int mqtt_port = 1883;
 
+
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-void setup()
-{
-  Serial.begin(9600);
+void setup(){
+  Serial.begin(115200);
+  pinMode(fan, OUTPUT); // set the pin as output
+  digitalWrite(fan, HIGH);
     //Format the LCD buffers with blank spaces
-    sprintf(line1,"%s","                    ");
-    sprintf(line2,"%s","                    ");
-    sprintf(line3,"%s","                    ");
-    sprintf(line4,"%s","                    ");
+  for(int i = 0; i<4; i++){
+      lcd.setCursor(0,i);
+      lcd.print("                    ");
+   }
      
     lcd.begin(20, 4);   //Initialize screen as a 20x4
     lcd.clear();
@@ -77,7 +107,7 @@ void setup()
         lcd.print(" http://192.168.4.1 "); 
         
       
-      res = wm.autoConnect("ESP_WIFI_SETUP","setup_password"); // password protected ap
+      res = wm.autoConnect("ESP_WIFI_SETUP"); 
       if(!res) {
             Serial.println("Failed to connect");
             lcd.setCursor(0,1);
@@ -87,12 +117,13 @@ void setup()
         }  
       
    }
-         
+         strsize = sizeof(WiFi.SSID());
+         pos = floor(abs((20 - strsize))/2);
         lcd.setCursor(0,0);
         lcd.print("    Connected to    ");
         lcd.setCursor(0,1);
         lcd.print("                    ");
-        lcd.setCursor(0,1);
+        lcd.setCursor(pos,1);
         lcd.print(WiFi.SSID());
         lcd.setCursor(0,2);
         lcd.print(" Network IP ADDRESS ");
@@ -103,8 +134,34 @@ void setup()
         
         delay(10000);
         
-         configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
          timeConfigured = true;
+         
+         lcd.setCursor(0,0);
+          lcd.print("   Checking Sensor  ");
+          lcd.setCursor(0,3);
+          lcd.print("                    ");
+        if (! bme.begin(0x76, &Wire)) {
+          
+          lcd.setCursor(0,1);
+          lcd.print("                    ");
+         
+          lcd.setCursor(0,2);
+          lcd.print("BME280 SENSOR Failed");
+          
+        }
+        else{
+          lcd.setCursor(0,1);
+          lcd.print("                    ");
+         
+          lcd.setCursor(0,2);
+          lcd.print("BME280 SENSOR Ready");
+           delay(2000);
+          displaySensor();
+          
+        }
+        delay(3000);
+         
 
          //connecting to a mqtt broker
        client.setServer(mqtt_broker, mqtt_port);
@@ -121,18 +178,29 @@ void setup()
                delay(2000);
            }
        }
-       // publish and subscribe
-       client.publish(topic, "Hi EMQX I'm ESP32 ^^");
-       client.subscribe(topic);
+       // subscribe and listen to fan control commands
+       client.subscribe(fan_ctrl_tpc_dev_sub);
       }
       
       void callback(char *topic, byte *payload, unsigned int length) {
-       Serial.print("Message arrived in topic: ");
-       Serial.println(topic);
-       Serial.print("Message:");
-       for (int i = 0; i < length; i++) {
-           Serial.print((char) payload[i]);
+     
+       if(payload[0] =='0'){
+        Serial.println("Fan: OFF");
+        digitalWrite(fan, LOW);
+        client.publish(fan_ctrl_tpc_dev_pub, "0");
+        sprintf(fanStatus,"%3s", "OFF");
        }
+       else if(payload[0] =='1'){
+        Serial.println("Fan: ON");
+        digitalWrite(fan, HIGH);
+        client.publish(fan_ctrl_tpc_dev_pub,"1");
+        sprintf(fanStatus,"%3s", "ON");
+       }
+       
+   
+       /*for (int i = 0; i < length; i++) {
+           Serial.print((char) payload[i]);
+       }*/
          
 }
 
@@ -140,22 +208,23 @@ void loop(){
   client.loop();
   
   if (millis() - lasttick > 1000){
+    struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    lcd.clear();
+   sprintf(line2,"%s","Time Update Failed! ");
+   lcd.setCursor(0,1);
+   lcd.print(line2);
+    return;
+  }
     lasttick = millis();
-    if(timeConfigured){
-      printLocalTime();
-    }
-    else {
-     lcd.setCursor(0,0);
-        lcd.print("                    ");
-        lcd.setCursor(0,1);
-        lcd.print("                    ");
-         lcd.setCursor(0,1);
-         lcd.print("   Running without  ");
-         lcd.setCursor(0,2);
-         lcd.print(" updated Server time ");
-         lcd.setCursor(0,3);
-         lcd.print("                    ");  
-     }
+    bme.takeForcedMeasurement(); 
+    displaySensor();
+     sprintf(sysTime,"%02d:%02d:%02d",timeinfo.tm_hour,timeinfo.tm_min, timeinfo.tm_sec);
+     //client.subscribe(fan_ctrl_tpc);
+     client.publish(timer_tpc, sysTime);
+     client.publish(tmp_tpc, temp);
+     client.publish(hum_tpc, humi);
+     client.publish(prs_tpc, pres);
   }
 }
 
@@ -176,8 +245,56 @@ void printLocalTime(){
   lcd.print(&timeinfo, "  %d %B %Y ");
   lcd.setCursor(0,3);
   lcd.print("                    ");
- Serial.println(&timeinfo, "      %H:%M:%S      ");//
- sprintf(times,"%02d:%02d:%02d",timeinfo.tm_hour,timeinfo.tm_min, timeinfo.tm_sec);
- client.publish(topic, times);
+ //Serial.println(&timeinfo, "      %H:%M:%S      ");//
+ sprintf(sysTime,"%02d:%02d:%02d",timeinfo.tm_hour,timeinfo.tm_min, timeinfo.tm_sec);
+ 
   
+}
+
+void displaySensor(){
+          
+          pressure = bme.readPressure()/ 100.0F;
+          humidity = bme.readHumidity();
+          temperature = bme.readTemperature();
+          
+          dtostrf(30.00, 2, 2, temp);
+          dtostrf(humidity, 4, 2, humi);
+          dtostrf(pressure, 5, 1, pres);
+          
+         
+         /* Serial.println("--------------------------------");
+          Serial.print("Temperature = ");
+          Serial.print(temp);
+          Serial.println(" *C");
+      
+          Serial.print("Pressure = ");
+      
+          Serial.print(pres);
+          Serial.println(" hPa");
+      
+         
+      
+          Serial.print("Humidity = ");
+          Serial.print(humi);
+          Serial.println(" %");
+          Serial.println("--------------------------------");*/
+              lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("   FAN status: ");
+        lcd.setCursor(15,0);
+        lcd.print(fanStatus);
+        lcd.setCursor(0,1);
+        lcd.print("Temperature: ");
+        lcd.setCursor(13,1);
+        lcd.print(bme.readTemperature());
+        lcd.setCursor(0,2);
+        lcd.print("Humidity: ");
+        lcd.setCursor(10,2);
+        lcd.print(humi);
+        lcd.setCursor(0,3);
+        lcd.print("Pressure: "); 
+        lcd.setCursor(10,3);
+        lcd.print(pres);
+        
+          
 }
