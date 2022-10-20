@@ -408,7 +408,7 @@ void printLocalTime(){
   lcd.setCursor(0,2);
   lcd.print(&timeinfo, "      %A        ");
   lcd.setCursor(0,3);
-  lcd.print(&timeinfo, "  %d %B %Y ");
+  lcd.print(&timeinfo, "  %d %B %Y    ");
   
  sprintf(sysTime,"%02d:%02d:%02d",timeinfo.tm_hour,timeinfo.tm_min, timeinfo.tm_sec);
  
@@ -429,18 +429,26 @@ void displaySensor(){
         lcd.print("Temperature: ");
         Serial.println(temps);
         lcd.setCursor(13,1);
-        lcd.print(temperature);
+        lcd.print(temperature,1);
+        lcd.setCursor(18,1);
+        lcd.print((char)223);
+        lcd.setCursor(19,1);
+        lcd.print("C");
         lcd.setCursor(0,2);
          lcd.print("                    ");
          lcd.setCursor(0,2);
         lcd.print("Humidity: ");
         lcd.setCursor(10,2);
-        lcd.print(humidity);
+        lcd.print(humidity,0);
+        lcd.setCursor(13,2);
+        lcd.print("%");
         Serial.println(humid);
         lcd.setCursor(0,3);
         lcd.print("Pressure: "); 
         lcd.setCursor(10,3);
-        lcd.print(pressure);
+        lcd.print(pressure,1);
+        lcd.setCursor(15,3);
+        lcd.print(" hPa");
         
           
 }
